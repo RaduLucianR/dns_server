@@ -121,7 +121,7 @@ impl DNSPacket {
             let mut len_byte = buffer[index];
             let question_count = header.question_count as usize;
 
-            for question_n in 0..question_count {
+            for _question_n in 0..question_count {
                 let mut domain_name: String = String::new();
                 while len_byte != null_byte {
                     println!("len={}", len_byte);
