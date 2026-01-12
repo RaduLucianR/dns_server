@@ -114,41 +114,56 @@ impl DNSPacket {
         };
         let mut questions: Vec<DNSQuestion> = Vec::new();
 
-        if header.query_response == false {
-            let mut index: usize = 12;
-            let encoding_mask: u8 = 0b1100_0000;
-            let null_byte: u8 = 0;
-            let mut len_byte = buffer[index];
-            let question_count = header.question_count as usize;
+        let mut domain_name: String = String::new();
+        let mut index: usize = 12;
+        let encoding_mask: u8 = 0b1100_0000;
+        let null_byte: u8 = 0;
+        let mut len_byte = buffer[index];
+        let question_count = header.question_count as usize;
 
-            for _question_n in 0..question_count {
-                let mut domain_name: String = String::new();
-                while len_byte != null_byte {
-                    println!("len={}", len_byte);
-                    let do_jump = len_byte & encoding_mask == encoding_mask;
-                    if do_jump {}
-                    let label = &buffer[index + 1..index + len_byte as usize + 1];
-                    let label_as_string = std::str::from_utf8(label).expect("valid UTF-8");
-                    domain_name += label_as_string;
-                    index = index + len_byte as usize + 1;
-                    len_byte = buffer[index];
-                    if len_byte != null_byte {
-                        domain_name += ".";
-                    }
-                }
-                let record_type = BigEndian::read_u16(&buffer[index + 1..index + 3]);
-                let class = BigEndian::read_u16(&buffer[index + 3..index + 5]);
-                let question = DNSQuestion {
-                    name: domain_name,
-                    record_type: record_type,
-                    class: class,
-                };
-                index += 5; // 2 bytes of record_type + 2 bytes of class + 1 so that we look after the class
-                questions.push(question);
-            }
+        for _question_n in 0..question_count {
+            (domain_name, index) = DNSPacket::read_domain_name(buffer, index);
+            let record_type = BigEndian::read_u16(&buffer[index + 1..index + 3]);
+            let class = BigEndian::read_u16(&buffer[index + 3..index + 5]);
+            let question = DNSQuestion {
+                name: domain_name,
+                record_type: record_type,
+                class: class,
+            };
+            index += 5; // 2 bytes of record_type + 2 bytes of class + 1 so that we look after the class
+            questions.push(question);
         }
 
         DNSPacket { header, questions }
+    }
+
+    pub fn read_domain_name(buffer: [u8; 512], start_index: usize) -> (String, usize) {
+        let mut domain_name: String = String::new();
+        let encoding_mask: u8 = 0b1100_0000;
+        let null_byte: u8 = 0;
+        let mut index = start_index;
+        let mut len_byte = buffer[index];
+
+        while len_byte != null_byte {
+            println!("len={}", len_byte);
+            let do_jump = len_byte & encoding_mask == encoding_mask;
+            if do_jump {
+                let jump_bytes = BigEndian::read_u16(&buffer[index..index + 2]);
+                let jump_position = jump_bytes & 0xC000 >> 2u8;
+                println!("Jump position: {}", jump_position);
+            } else {
+                let label = &buffer[index + 1..index + len_byte as usize + 1];
+                let label_as_string = std::str::from_utf8(label).expect("valid UTF-8");
+                domain_name += label_as_string;
+                index = index + len_byte as usize + 1;
+                len_byte = buffer[index];
+                if len_byte != null_byte {
+                    domain_name += ".";
+                }
+            }
+        }
+
+        return (domain_name, index);
     }
 }
 
