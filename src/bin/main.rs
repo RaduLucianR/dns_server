@@ -1,5 +1,4 @@
 use byteorder::{BigEndian, ByteOrder};
-use std::fmt::Display;
 use std::fs::File;
 use std::io::Read;
 
@@ -28,64 +27,56 @@ pub struct DNSQuestion {
     class: u16,
 }
 
+#[derive(Debug)]
 pub struct DNSRecordPreamble {
     name: String,
-    record_type: u16,
+    record_type: DNSRecordType,
     class: u16,
-    ttl: u64,
+    ttl: u32,
     len: u16,
 }
 
-pub struct DNSRecord {
-    preamble: DNSRecordPreamble,
-    ip_address: u64,
+#[derive(Debug)]
+pub enum DNSRecord {
+    UNKNOWN {
+        preamble: DNSRecordPreamble,
+    },
+    A {
+        preamble: DNSRecordPreamble,
+        ip_address: IPv4Address,
+    },
 }
 
-impl Display for DNSHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let query_response = match self.query_response {
-            false => "QUERY",
-            true => "RESPONSE",
-        };
+#[derive(Debug)]
+pub enum DNSRecordType {
+    UNKNOWN(u16),
+    A,
+}
 
-        write!(
-            f,
-            "DNS Header
-            ID:      {}
-            QR:      {}
-            OPCODE:  {}
-            AA:      {}
-            TC:      {}
-            RD:      {}
-            RA:      {}
-            Z:       {}
-            RCODE:   {}
-            QDCOUNT: {}
-            ANCOUNT: {}
-            NSCOUNT: {}
-            ARCOUNT: {}
-            ",
-            self.id,
-            query_response,
-            self.op_code,
-            self.authoritative_answer,
-            self.truncated_message,
-            self.recursion_desired,
-            self.recursion_available,
-            self.reserved,
-            self.response_code,
-            self.question_count,
-            self.answer_count,
-            self.authority_count,
-            self.additional_count
-        )
+impl DNSRecordType {
+    pub fn from_u16(number: u16) -> DNSRecordType {
+        match number {
+            1 => DNSRecordType::A,
+            _ => DNSRecordType::UNKNOWN(number),
+        }
     }
+}
+
+#[derive(Debug)]
+pub struct IPv4Address {
+    first: u8,
+    second: u8,
+    thrid: u8,
+    fourth: u8,
 }
 
 #[derive(Debug)]
 pub struct DNSPacket {
     header: DNSHeader,
     questions: Vec<DNSQuestion>,
+    answers: Vec<DNSRecord>,
+    authorities: Vec<DNSRecord>,
+    additional: Vec<DNSRecord>,
 }
 
 impl DNSPacket {
@@ -112,13 +103,16 @@ impl DNSPacket {
             authority_count: BigEndian::read_u16(&header_bytes[8..10]), // Bytes 8-9
             additional_count: BigEndian::read_u16(&header_bytes[10..12]), // Bytes 10-11
         };
+
         let mut questions: Vec<DNSQuestion> = Vec::new();
+        let mut answers: Vec<DNSRecord> = Vec::new();
+        let mut authorities: Vec<DNSRecord> = Vec::new();
+        let mut additional: Vec<DNSRecord> = Vec::new();
 
         let mut domain_name: String = String::new();
         let mut index: usize = 12;
-        let question_count = header.question_count as usize;
 
-        for _question_n in 0..question_count {
+        for _ in 0..header.question_count as usize {
             (domain_name, index) = DNSPacket::read_domain_name(buffer, index);
             let record_type = BigEndian::read_u16(&buffer[index + 1..index + 3]);
             let class = BigEndian::read_u16(&buffer[index + 3..index + 5]);
@@ -131,7 +125,41 @@ impl DNSPacket {
             questions.push(question);
         }
 
-        DNSPacket { header, questions }
+        for _ in 0..header.answer_count as usize {
+            (domain_name, index) = DNSPacket::read_domain_name(buffer, index);
+            let preamble = DNSRecordPreamble {
+                name: domain_name,
+                record_type: DNSRecordType::from_u16(BigEndian::read_u16(
+                    &buffer[index..index + 2],
+                )),
+                class: BigEndian::read_u16(&buffer[index + 2..index + 4]),
+                ttl: BigEndian::read_u32(&buffer[index + 4..index + 8]),
+                len: BigEndian::read_u16(&buffer[index + 8..index + 10]),
+            };
+            index += 10;
+
+            let record = match preamble.record_type {
+                DNSRecordType::A => DNSRecord::A {
+                    preamble: preamble,
+                    ip_address: IPv4Address {
+                        first: buffer[index],
+                        second: buffer[index + 1],
+                        thrid: buffer[index + 2],
+                        fourth: buffer[index + 3],
+                    },
+                },
+                DNSRecordType::UNKNOWN(_) => DNSRecord::UNKNOWN { preamble },
+            };
+            answers.push(record);
+        }
+
+        DNSPacket {
+            header,
+            questions,
+            answers,
+            authorities,
+            additional,
+        }
     }
 
     pub fn read_domain_name_part(buffer: [u8; 512], start_index: usize) -> String {
@@ -165,12 +193,14 @@ impl DNSPacket {
             let do_jump = len_byte & encoding_mask == encoding_mask;
             if do_jump {
                 let jump_bytes = BigEndian::read_u16(&buffer[index..index + 2]);
-                let jump_position = jump_bytes & 0xC000 >> 2u8;
+                println!("We're at index {}. Jump bytes: {:#b}", index, jump_bytes);
+                let jump_position = jump_bytes ^ 0xC000;
                 println!("Jump position: {}", jump_position);
                 let domain_name_part =
                     DNSPacket::read_domain_name_part(buffer, jump_position as usize);
                 domain_name += &domain_name_part;
-                domain_name += ".";
+                index += 2;
+                break;
             } else {
                 let label = &buffer[index + 1..index + len_byte as usize + 1];
                 let label_as_string = std::str::from_utf8(label).expect("valid UTF-8");
