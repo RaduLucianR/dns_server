@@ -116,9 +116,6 @@ impl DNSPacket {
 
         let mut domain_name: String = String::new();
         let mut index: usize = 12;
-        let encoding_mask: u8 = 0b1100_0000;
-        let null_byte: u8 = 0;
-        let mut len_byte = buffer[index];
         let question_count = header.question_count as usize;
 
         for _question_n in 0..question_count {
@@ -137,6 +134,26 @@ impl DNSPacket {
         DNSPacket { header, questions }
     }
 
+    pub fn read_domain_name_part(buffer: [u8; 512], start_index: usize) -> String {
+        let mut domain_name_part: String = String::new();
+        let null_byte: u8 = 0;
+        let mut index = start_index;
+        let mut len_byte = buffer[index];
+
+        while len_byte != null_byte {
+            let label = &buffer[index + 1..index + len_byte as usize + 1];
+            let label_as_string = std::str::from_utf8(label).expect("valid UTF-8");
+            domain_name_part += label_as_string;
+            index = index + len_byte as usize + 1;
+            len_byte = buffer[index];
+            if len_byte != null_byte {
+                domain_name_part += ".";
+            }
+        }
+
+        return domain_name_part;
+    }
+
     pub fn read_domain_name(buffer: [u8; 512], start_index: usize) -> (String, usize) {
         let mut domain_name: String = String::new();
         let encoding_mask: u8 = 0b1100_0000;
@@ -145,12 +162,15 @@ impl DNSPacket {
         let mut len_byte = buffer[index];
 
         while len_byte != null_byte {
-            println!("len={}", len_byte);
             let do_jump = len_byte & encoding_mask == encoding_mask;
             if do_jump {
                 let jump_bytes = BigEndian::read_u16(&buffer[index..index + 2]);
                 let jump_position = jump_bytes & 0xC000 >> 2u8;
                 println!("Jump position: {}", jump_position);
+                let domain_name_part =
+                    DNSPacket::read_domain_name_part(buffer, jump_position as usize);
+                domain_name += &domain_name_part;
+                domain_name += ".";
             } else {
                 let label = &buffer[index + 1..index + len_byte as usize + 1];
                 let label_as_string = std::str::from_utf8(label).expect("valid UTF-8");
@@ -168,7 +188,7 @@ impl DNSPacket {
 }
 
 fn main() -> std::io::Result<()> {
-    let mut file = File::open("query_packet.txt")?;
+    let mut file = File::open("response_packet.txt")?;
     let mut buffer: [u8; 512] = [0; 512];
     file.read(&mut buffer)?;
 
