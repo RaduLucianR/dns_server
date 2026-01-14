@@ -79,7 +79,36 @@ pub struct DNSPacket {
     additional: Vec<DNSRecord>,
 }
 
+pub fn write_u16(buffer: &mut [u8], number: u16) {
+    buffer[0] = (number >> 8) as u8;
+    buffer[1] = (number & 0xFF) as u8;
+}
+
 impl DNSPacket {
+    pub fn new() -> DNSPacket {
+        DNSPacket {
+            header: DNSHeader {
+                id: 0,
+                query_response: false,
+                op_code: 0,
+                authoritative_answer: false,
+                truncated_message: false,
+                recursion_desired: false,
+                recursion_available: false,
+                reserved: 0,
+                response_code: 0,
+                question_count: 0,
+                answer_count: 0,
+                authority_count: 0,
+                additional_count: 0,
+            },
+            questions: Vec::new(),
+            answers: Vec::new(),
+            authorities: Vec::new(),
+            additional: Vec::new(),
+        }
+    }
+
     pub fn from_buffer(buffer: [u8; 512]) -> DNSPacket {
         let header_bytes = &buffer[0..12];
 
@@ -215,6 +244,25 @@ impl DNSPacket {
 
         return (domain_name, index);
     }
+
+    pub fn to_buffer(self) -> [u8; 512] {
+        let mut buffer: [u8; 512] = [0; 512];
+        write_u16(&mut buffer[0..2], self.header.id);
+        buffer[2] = ((self.header.query_response as u8) << 7)
+            | (self.header.op_code << 3)
+            | ((self.header.authoritative_answer as u8) << 2)
+            | ((self.header.truncated_message as u8) << 1)
+            | (self.header.recursion_desired as u8);
+        buffer[3] = ((self.header.recursion_available as u8) << 7)
+            | (self.header.reserved << 4)
+            | (self.header.response_code);
+        write_u16(&mut buffer[4..6], self.header.question_count);
+        write_u16(&mut buffer[6..8], self.header.answer_count);
+        write_u16(&mut buffer[8..10], self.header.authority_count);
+        write_u16(&mut buffer[10..12], self.header.additional_count);
+
+        return buffer;
+    }
 }
 
 fn main() -> std::io::Result<()> {
@@ -223,6 +271,11 @@ fn main() -> std::io::Result<()> {
     file.read(&mut buffer)?;
 
     let packet: DNSPacket = DNSPacket::from_buffer(buffer);
+
+    let mut my_packet = DNSPacket::new();
+    my_packet.header.id = 1;
+    let my_buffer = my_packet.to_buffer();
+
     println!("{:#?}", packet);
 
     Ok(())
