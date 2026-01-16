@@ -1,6 +1,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use std::fs::File;
 use std::io::Read;
+use std::net::UdpSocket;
 
 #[derive(Debug)]
 pub struct DNSHeader {
@@ -66,7 +67,7 @@ impl DNSRecordType {
 pub struct IPv4Address {
     first: u8,
     second: u8,
-    thrid: u8,
+    third: u8,
     fourth: u8,
 }
 
@@ -173,7 +174,7 @@ impl DNSPacket {
                     ip_address: IPv4Address {
                         first: buffer[index],
                         second: buffer[index + 1],
-                        thrid: buffer[index + 2],
+                        third: buffer[index + 2],
                         fourth: buffer[index + 3],
                     },
                 },
@@ -181,6 +182,8 @@ impl DNSPacket {
             };
             answers.push(record);
         }
+
+        // TODO: read authority & additional section
 
         DNSPacket {
             header,
@@ -191,7 +194,7 @@ impl DNSPacket {
         }
     }
 
-    pub fn read_domain_name_part(buffer: [u8; 512], start_index: usize) -> String {
+    fn read_domain_name_part(buffer: [u8; 512], start_index: usize) -> String {
         let mut domain_name_part: String = String::new();
         let null_byte: u8 = 0;
         let mut index = start_index;
@@ -211,7 +214,7 @@ impl DNSPacket {
         return domain_name_part;
     }
 
-    pub fn read_domain_name(buffer: [u8; 512], start_index: usize) -> (String, usize) {
+    fn read_domain_name(buffer: [u8; 512], start_index: usize) -> (String, usize) {
         let mut domain_name: String = String::new();
         let encoding_mask: u8 = 0b1100_0000;
         let null_byte: u8 = 0;
@@ -245,8 +248,27 @@ impl DNSPacket {
         return (domain_name, index);
     }
 
+    fn write_domain_name(buffer: &mut [u8; 512], mut index: usize, domain_name: String) -> usize {
+        for domain in domain_name.split(".") {
+            buffer[index] = domain.chars().count() as u8;
+            index += 1;
+
+            for c in domain.chars() {
+                buffer[index] = c as u8;
+                index += 1;
+            }
+        }
+
+        buffer[index] = 0 as u8;
+        index += 1;
+
+        return index;
+    }
+
     pub fn to_buffer(self) -> [u8; 512] {
         let mut buffer: [u8; 512] = [0; 512];
+
+        // Write header
         write_u16(&mut buffer[0..2], self.header.id);
         buffer[2] = ((self.header.query_response as u8) << 7)
             | (self.header.op_code << 3)
@@ -261,22 +283,49 @@ impl DNSPacket {
         write_u16(&mut buffer[8..10], self.header.authority_count);
         write_u16(&mut buffer[10..12], self.header.additional_count);
 
+        let mut index: usize = 12;
+        for question in self.questions {
+            index = DNSPacket::write_domain_name(&mut buffer, index, question.name);
+            write_u16(&mut buffer[index..index + 2], question.record_type);
+            write_u16(&mut buffer[index + 2..index + 4], question.class);
+        }
+        index += 4;
+
+        // Write answers, authority, additional
+
         return buffer;
     }
 }
 
 fn main() -> std::io::Result<()> {
-    let mut file = File::open("response_packet.txt")?;
-    let mut buffer: [u8; 512] = [0; 512];
-    file.read(&mut buffer)?;
+    // let mut file = File::open("response_packet.txt")?;
+    // let mut buffer: [u8; 512] = [0; 512];
+    // file.read(&mut buffer)?;
 
-    let packet: DNSPacket = DNSPacket::from_buffer(buffer);
+    // let packet: DNSPacket = DNSPacket::from_buffer(buffer);
+
+    // ################ Send packet to DNS server #######
+    let server = ("8.8.8.8", 53); // Google's DNS server
+    let socket = UdpSocket::bind(("0.0.0.0", 5555))?;
 
     let mut my_packet = DNSPacket::new();
-    my_packet.header.id = 1;
-    let my_buffer = my_packet.to_buffer();
+    my_packet.header.id = 2222;
+    my_packet.header.query_response = false;
+    my_packet.header.recursion_desired = true;
+    my_packet.header.question_count = 1;
+    my_packet.questions.push(DNSQuestion {
+        name: "facebook.com".to_string(),
+        record_type: 1,
+        class: 1,
+    });
+    let my_buffer: [u8; 512] = my_packet.to_buffer();
+    print!("{:x?}\n", &my_buffer[0..30]);
 
-    println!("{:#?}", packet);
+    socket.send_to(&my_buffer, server)?;
+    let mut receive_buffer: [u8; 512] = [0; 512];
+    socket.recv_from(&mut receive_buffer)?;
+    let receive_packet = DNSPacket::from_buffer(receive_buffer);
+    println!("{:#?}", receive_packet);
 
     Ok(())
 }
